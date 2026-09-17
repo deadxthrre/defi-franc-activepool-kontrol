@@ -11,12 +11,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Prebuilt image: contains K + KEVM + Kontrol + Foundry. Nothing to compile
-  # on the runner, which avoids the OOM-kill seen when `kup` builds the
-  # toolchain on a 2-core/7GB ubuntu-latest runner.
-  # Run as the image's own `user` (uid 1010) so `pip --user` installed
-  # packages under /home/user/.local are importable; the job workspace is made
-  # world-writable so that user can write build artifacts there.
   KONTROL_IMAGE: runtimeverificationinc/kontrol:ubuntu-jammy-1.0.255
 
 jobs:
@@ -48,30 +42,58 @@ jobs:
             -v "$PWD":/work -w /work "$KONTROL_IMAGE" \
             bash -c 'kontrol build --verbose'
 
-      - name: Prove drain properties (permissionless / access control)
+      - name: Prove group 1 (permissionless / access control)
+        id: g1
+        continue-on-error: true
         run: |
           docker run --rm -u user -e HOME=/home/user \
             -v "$PWD":/work -w /work "$KONTROL_IMAGE" \
             bash -c 'kontrol prove --match-test "ActivePoolPropertiesTest.check_external_attacker_cannot_send_eth" --reinit --workers 2 --xml-test-report --xml-test-report-name kontrol-prove-eth.xml'
 
-      - name: Prove drain properties (ERC20 + cross-asset)
+      - name: Prove group 2 (ERC20 + cross-asset)
+        id: g2
+        continue-on-error: true
         run: |
           docker run --rm -u user -e HOME=/home/user \
             -v "$PWD":/work -w /work "$KONTROL_IMAGE" \
             bash -c 'kontrol prove --match-test "ActivePoolPropertiesTest.check_external_attacker_cannot_send_erc20" --match-test "ActivePoolPropertiesTest.check_sp_of_other_asset_cannot_drain" --reinit --workers 2 --xml-test-report --xml-test-report-name kontrol-prove-erc20.xml'
 
-      - name: Prove accounting invariants
+      - name: Prove group 3 (accounting invariants)
+        id: g3
+        continue-on-error: true
         run: |
           docker run --rm -u user -e HOME=/home/user \
             -v "$PWD":/work -w /work "$KONTROL_IMAGE" \
             bash -c 'kontrol prove --match-test "ActivePoolPropertiesTest.check_authorized_sp_eth_withdraw_decreases_balance_by_amount" --match-test "ActivePoolPropertiesTest.check_cannot_send_more_than_recorded_balance" --match-test "ActivePoolPropertiesTest.check_received_erc20_deposit_tracking" --reinit --workers 2 --xml-test-report --xml-test-report-name kontrol-prove-accounting.xml'
 
-      - name: Upload proof reports
+      - name: Diagnose failing proofs
+        if: steps.g1.outcome == 'failure' || steps.g2.outcome == 'failure' || steps.g3.outcome == 'failure'
+        run: |
+          for t in \
+            "ActivePoolPropertiesTest.check_external_attacker_cannot_send_eth(uint256,address)" \
+            "ActivePoolPropertiesTest.check_external_attacker_cannot_send_erc20(uint256,address)" \
+            "ActivePoolPropertiesTest.check_sp_of_other_asset_cannot_drain(uint256)" \
+            "ActivePoolPropertiesTest.check_authorized_sp_eth_withdraw_decreases_balance_by_amount(uint256)" \
+            "ActivePoolPropertiesTest.check_cannot_send_more_than_recorded_balance(uint256,uint256)" \
+            "ActivePoolPropertiesTest.check_received_erc20_deposit_tracking(uint256)" ; do
+            echo "=================== show: $t ==================="
+            docker run --rm -u user -e HOME=/home/user \
+              -v "$PWD":/work -w /work "$KONTROL_IMAGE" \
+              bash -c "kontrol show '$t' --failure-info --pending --failing --verbose" 2>&1 || true
+          done
+
+      - name: Upload reports and proof data
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: kontrol-reports
           path: |
             kontrol-prove-*.xml
-            out/proofs/**/proof.json
+            out/proofs
           if-no-files-found: ignore
+
+      - name: Fail if any property group failed
+        if: steps.g1.outcome == 'failure' || steps.g2.outcome == 'failure' || steps.g3.outcome == 'failure'
+        run: |
+          echo "One or more Kontrol property groups failed (see 'Diagnose failing proofs' above)."
+          exit 1
