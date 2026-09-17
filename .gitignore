@@ -1,0 +1,10 @@
+# Foundry build artifacts
+/cache/
+/out/
+!out/.gitkeep
+
+# Kontrol proof state lives inside out/ (large, CI-regenerable)
+
+.env
+
+# vendored forge-std is committed (see lib/forge-std)
