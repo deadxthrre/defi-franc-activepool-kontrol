@@ -10,6 +10,12 @@ concurrency:
   group: kontrol-activepool-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Prebuilt image: contains K + KEVM + Kontrol + Foundry. Nothing to compile
+  # on the runner, which avoids the OOM-kill seen when `kup` builds the
+  # toolchain on a 2-core/7GB ubuntu-latest runner.
+  KONTROL_IMAGE: runtimeverificationinc/kontrol:ubuntu-jammy-1.0.255
+
 jobs:
   kontrol-prove:
     name: kontrol prove (DeFi Franc ActivePool)
@@ -18,42 +24,9 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      # The published runtimeverification/install-kontrol action pins Nix
-      # 2.13.3, which current `kup` rejects (needs >= 2.18). Install a modern
-      # Nix ourselves and replicate the documented install steps.
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          github_access_token: ${{ github.token }}
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            substituters = https://cache.nixos.org https://k-framework.cachix.org
-            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= k-framework.cachix.org-1:jeyMXB2h28gpNRjuVkehg+zLj62ma1RnyyopA/20yFE=
-
-      - name: Configure k-framework binary caches
-        uses: cachix/cachix-action@v15
-        with:
-          name: k-framework
-          skipPush: true
-
-      - name: Add k-framework-binary cache
-        run: cachix use k-framework-binary
-
-      - name: Set up Foundry toolchain
-        uses: foundry-rs/foundry-toolchain@v1.4.0
-        with:
-          version: stable
-
-      - name: Install Kup (K package manager)
-        run: bash <(curl https://kframework.org/install)
-
-      - name: Install Kontrol
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: kup install kontrol
+      - name: Pull Kontrol image
+        run: docker pull "$KONTROL_IMAGE"
 
       - name: Cache Kontrol build artifacts
         uses: actions/cache@v4
@@ -64,31 +37,28 @@ jobs:
             kontrol-${{ runner.os }}-
 
       - name: Build Kontrol definition
-        run: kontrol build --verbose
+        run: |
+          docker run --rm --user root -e HOME=/root \
+            -v "$PWD":/work -w /work "$KONTROL_IMAGE" \
+            bash -c 'export PATH=/home/user/.local/bin:/home/user/.foundry/bin:$PATH; kontrol build --verbose'
 
       - name: Prove drain properties (permissionless / access control)
-        run: >
-          kontrol prove
-          --match-test 'ActivePoolPropertiesTest.check_external_attacker_cannot_send_eth'
-          --reinit --workers 2
-          --xml-test-report --xml-test-report-name kontrol-prove-eth.xml
+        run: |
+          docker run --rm --user root -e HOME=/root \
+            -v "$PWD":/work -w /work "$KONTROL_IMAGE" \
+            bash -c 'export PATH=/home/user/.local/bin:/home/user/.foundry/bin:$PATH; kontrol prove --match-test "ActivePoolPropertiesTest.check_external_attacker_cannot_send_eth" --reinit --workers 2 --xml-test-report --xml-test-report-name kontrol-prove-eth.xml'
 
       - name: Prove drain properties (ERC20 + cross-asset)
-        run: >
-          kontrol prove
-          --match-test 'ActivePoolPropertiesTest.check_external_attacker_cannot_send_erc20'
-          --match-test 'ActivePoolPropertiesTest.check_sp_of_other_asset_cannot_drain'
-          --reinit --workers 2
-          --xml-test-report --xml-test-report-name kontrol-prove-erc20.xml
+        run: |
+          docker run --rm --user root -e HOME=/root \
+            -v "$PWD":/work -w /work "$KONTROL_IMAGE" \
+            bash -c 'export PATH=/home/user/.local/bin:/home/user/.foundry/bin:$PATH; kontrol prove --match-test "ActivePoolPropertiesTest.check_external_attacker_cannot_send_erc20" --match-test "ActivePoolPropertiesTest.check_sp_of_other_asset_cannot_drain" --reinit --workers 2 --xml-test-report --xml-test-report-name kontrol-prove-erc20.xml'
 
       - name: Prove accounting invariants
-        run: >
-          kontrol prove
-          --match-test 'ActivePoolPropertiesTest.check_authorized_sp_eth_withdraw_decreases_balance_by_amount'
-          --match-test 'ActivePoolPropertiesTest.check_cannot_send_more_than_recorded_balance'
-          --match-test 'ActivePoolPropertiesTest.check_received_erc20_deposit_tracking'
-          --reinit --workers 2
-          --xml-test-report --xml-test-report-name kontrol-prove-accounting.xml
+        run: |
+          docker run --rm --user root -e HOME=/root \
+            -v "$PWD":/work -w /work "$KONTROL_IMAGE" \
+            bash -c 'export PATH=/home/user/.local/bin:/home/user/.foundry/bin:$PATH; kontrol prove --match-test "ActivePoolPropertiesTest.check_authorized_sp_eth_withdraw_decreases_balance_by_amount" --match-test "ActivePoolPropertiesTest.check_cannot_send_more_than_recorded_balance" --match-test "ActivePoolPropertiesTest.check_received_erc20_deposit_tracking" --reinit --workers 2 --xml-test-report --xml-test-report-name kontrol-prove-accounting.xml'
 
       - name: Upload proof reports
         if: always()
