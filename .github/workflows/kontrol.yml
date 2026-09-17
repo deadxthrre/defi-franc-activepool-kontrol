@@ -21,25 +21,44 @@ jobs:
         with:
           submodules: recursive
 
+      # The published runtimeverification/install-kontrol action pins Nix
+      # 2.13.3, which current `kup` rejects (needs >= 2.18). Install a modern
+      # Nix ourselves and replicate the documented install steps.
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://cache.nixos.org https://k-framework.cachix.org
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= k-framework.cachix.org-1:jeyMXB2h28gpNRjuVkehg+zLj62ma1RnyyopA/20yFE=
+
+      - name: Configure k-framework binary caches
+        uses: cachix/cachix-action@v15
+        with:
+          name: k-framework
+          skipPush: true
+
+      - name: Add k-framework-binary cache
+        run: cachix use k-framework-binary
+
       - name: Set up Foundry toolchain
         uses: foundry-rs/foundry-toolchain@v1.4.0
         with:
           version: stable
 
-      - name: Install Kontrol
-        uses: runtimeverification/install-kontrol@v1.0.1
-        with:
-          version: latest
+      - name: Install Kup (K package manager)
+        run: bash <(curl https://kframework.org/install)
 
-      # Kontrol's own digest machinery (out/digest) decides whether a
-      # re-kompile is actually needed, so caching out/ across runs is safe
-      # and turns the expensive kompile into a no-op on unchanged code.
+      - name: Install Kontrol
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: kup install kontrol
+
       - name: Cache Kontrol build artifacts
         uses: actions/cache@v4
         with:
-          path: |
-            out
-            ~/.cache
+          path: out
           key: kontrol-${{ runner.os }}-${{ hashFiles('src/**', 'test/**', 'lib/**', 'foundry.toml') }}
           restore-keys: |
             kontrol-${{ runner.os }}-
@@ -51,20 +70,16 @@ jobs:
         run: >
           kontrol prove
           --match-test 'ActivePoolPropertiesTest.check_external_attacker_cannot_send_eth'
-          --reinit
-          --xml-test-report
-          --xml-test-report-name kontrol-prove-eth.xml
-          --workers 2
+          --reinit --workers 2
+          --xml-test-report --xml-test-report-name kontrol-prove-eth.xml
 
       - name: Prove drain properties (ERC20 + cross-asset)
         run: >
           kontrol prove
           --match-test 'ActivePoolPropertiesTest.check_external_attacker_cannot_send_erc20'
           --match-test 'ActivePoolPropertiesTest.check_sp_of_other_asset_cannot_drain'
-          --reinit
-          --xml-test-report
-          --xml-test-report-name kontrol-prove-erc20.xml
-          --workers 2
+          --reinit --workers 2
+          --xml-test-report --xml-test-report-name kontrol-prove-erc20.xml
 
       - name: Prove accounting invariants
         run: >
@@ -72,10 +87,8 @@ jobs:
           --match-test 'ActivePoolPropertiesTest.check_authorized_sp_eth_withdraw_decreases_balance_by_amount'
           --match-test 'ActivePoolPropertiesTest.check_cannot_send_more_than_recorded_balance'
           --match-test 'ActivePoolPropertiesTest.check_received_erc20_deposit_tracking'
-          --reinit
-          --xml-test-report
-          --xml-test-report-name kontrol-prove-accounting.xml
-          --workers 2
+          --reinit --workers 2
+          --xml-test-report --xml-test-report-name kontrol-prove-accounting.xml
 
       - name: Upload proof reports
         if: always()
